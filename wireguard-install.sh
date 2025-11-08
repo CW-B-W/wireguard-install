@@ -95,21 +95,8 @@ function getHomeDirForClient() {
 	fi
 
 	# Home directory of the user, where the client configuration will be written
-	if [ -e "/home/${CLIENT_NAME}" ]; then
-		# if $1 is a user name
-		HOME_DIR="/home/${CLIENT_NAME}"
-	elif [ "${SUDO_USER}" ]; then
-		# if not, use SUDO_USER
-		if [ "${SUDO_USER}" == "root" ]; then
-			# If running sudo as root
-			HOME_DIR="/root"
-		else
-			HOME_DIR="/home/${SUDO_USER}"
-		fi
-	else
-		# if not SUDO_USER, use /root
-		HOME_DIR="/root"
-	fi
+	# Store client config files in the current directory `./`
+	HOME_DIR="./"
 
 	echo "$HOME_DIR"
 }
@@ -129,7 +116,7 @@ function installQuestions() {
 	echo ""
 
 	# Detect public IPv4 or IPv6 address and pre-fill for the user
-	SERVER_PUB_IP=$(ip -4 addr | sed -ne 's|^.* inet \([^/]*\)/.* scope global.*$|\1|p' | awk '{print $1}' | head -1)
+	SERVER_PUB_IP=$(curl -s https://ipinfo.io/ip)
 	if [[ -z ${SERVER_PUB_IP} ]]; then
 		# Detect public IPv6 address
 		SERVER_PUB_IP=$(ip -6 addr | sed -ne 's|^.* inet6 \([^/]*\)/.* scope global.*$|\1|p' | head -1)
@@ -155,9 +142,9 @@ function installQuestions() {
 	done
 
 	# Generate random number within private ports range
-	RANDOM_PORT=$(shuf -i49152-65535 -n1)
+	SERVER_PORT=51820
 	until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
-		read -rp "Server WireGuard port [1-65535]: " -e -i "${RANDOM_PORT}" SERVER_PORT
+		read -rp "Server WireGuard port [1-65535]: " -e -i "${SERVER_PORT}" SERVER_PORT
 	done
 
 	# Adguard DNS by default
@@ -192,14 +179,14 @@ function installWireGuard() {
 	# Install WireGuard tools and module
 	if [[ ${OS} == 'ubuntu' ]] || [[ ${OS} == 'debian' && ${VERSION_ID} -gt 10 ]]; then
 		apt-get update
-		apt-get install -y wireguard iptables resolvconf qrencode
+		apt-get install -y curl wireguard iptables resolvconf qrencode
 	elif [[ ${OS} == 'debian' ]]; then
 		if ! grep -rqs "^deb .* buster-backports" /etc/apt/; then
 			echo "deb http://deb.debian.org/debian buster-backports main" >/etc/apt/sources.list.d/backports.list
 			apt-get update
 		fi
 		apt update
-		apt-get install -y iptables resolvconf qrencode
+		apt-get install -y curl iptables resolvconf qrencode
 		apt-get install -y -t buster-backports wireguard
 	elif [[ ${OS} == 'fedora' ]]; then
 		if [[ ${VERSION_ID} -lt 32 ]]; then
@@ -207,25 +194,25 @@ function installWireGuard() {
 			dnf copr enable -y jdoss/wireguard
 			dnf install -y wireguard-dkms
 		fi
-		dnf install -y wireguard-tools iptables qrencode
+		dnf install -y curl wireguard-tools iptables qrencode
 	elif [[ ${OS} == 'centos' ]] || [[ ${OS} == 'almalinux' ]] || [[ ${OS} == 'rocky' ]]; then
 		if [[ ${VERSION_ID} == 8* ]]; then
 			yum install -y epel-release elrepo-release
 			yum install -y kmod-wireguard
 			yum install -y qrencode # not available on release 9
 		fi
-		yum install -y wireguard-tools iptables
+		yum install -y curl wireguard-tools iptables
 	elif [[ ${OS} == 'oracle' ]]; then
 		dnf install -y oraclelinux-developer-release-el8
 		dnf config-manager --disable -y ol8_developer
 		dnf config-manager --enable -y ol8_developer_UEKR6
 		dnf config-manager --save -y --setopt=ol8_developer_UEKR6.includepkgs='wireguard-tools*'
-		dnf install -y wireguard-tools qrencode iptables
+		dnf install -y curl wireguard-tools qrencode iptables
 	elif [[ ${OS} == 'arch' ]]; then
-		pacman -S --needed --noconfirm wireguard-tools qrencode
+		pacman -S --needed --noconfirm curl wireguard-tools qrencode
 	elif [[ ${OS} == 'alpine' ]]; then
 		apk update
-		apk add wireguard-tools iptables libqrencode-tools
+		apk add curl wireguard-tools iptables libqrencode-tools
 	fi
 
 	# Make sure the directory exists (this does not seem the be the case on fedora)
