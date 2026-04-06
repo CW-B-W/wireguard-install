@@ -66,8 +66,18 @@ EOF
 }
 
 function getHomeDirForClient() {
-    # Store client config files in the current directory
-    echo "./"
+    local CLIENT_NAME=$1
+
+    if [ -z "${CLIENT_NAME}" ]; then
+        echo "Error: getHomeDirForClient() requires a client name as argument"
+        exit 1
+    fi
+
+    # Home directory of the user, where the client configuration will be written
+    # Store client config files in the current directory `./`
+    HOME_DIR="./"
+
+    echo "$HOME_DIR"
 }
 
 function createInterfaceQuestions() {
@@ -104,6 +114,8 @@ function createInterfaceQuestions() {
         read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1 SERVER_WG_IPV6
     done
 
+    # Generate random number within private ports range
+    SERVER_PORT=51820
     until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
         read -rp "Server WireGuard port [1-65535]: " -e -i "${SERVER_PORT}" SERVER_PORT
     done
@@ -116,11 +128,6 @@ function createInterfaceQuestions() {
         if [[ ${CLIENT_DNS_2} == "" ]]; then
             CLIENT_DNS_2="${CLIENT_DNS_1}"
         fi
-    done
-
-    SERVER_PORT=51820
-    until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
-        read -rp "Server WireGuard port [1-65535]: " -e -i "${SERVER_PORT}" SERVER_PORT
     done
 
     until [[ ${ALLOWED_IPS} =~ ^.+$ ]]; do
