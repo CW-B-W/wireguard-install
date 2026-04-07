@@ -106,19 +106,64 @@ function createInterfaceQuestions() {
         read -rp "WireGuard interface name (unique): " -e -i wg1 SERVER_WG_NIC
     done
 
-    until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3} ]]; do
-        read -rp "Server WireGuard IPv4: " -e -i 10.66.66.1 SERVER_WG_IPV4
-    done
+	until [[ ${SERVER_WG_IPV4} =~ ^([0-9]{1,3}\.){3} ]]; do
+		read -rp "Server WireGuard IPv4: " -e -i 10.66.66.1 SERVER_WG_IPV4
+		# Check for IP conflict with existing WireGuard interfaces
+		if [[ -d /etc/wireguard ]]; then
+			for wg_conf in /etc/wireguard/*.conf; do
+				if [[ -f "$wg_conf" ]]; then
+					existing_ipv4=$(grep -oP 'Address\s*=\s*\K[0-9.]+' "$wg_conf" 2>/dev/null | head -1 || true)
+					if [[ -n "$existing_ipv4" ]]; then
+						existing_network=$(echo "$existing_ipv4" | cut -d'.' -f1-3)
+						new_network=$(echo "$SERVER_WG_IPV4" | cut -d'.' -f1-3)
+						if [[ "$existing_network" == "$new_network" ]]; then
+							echo -e "${RED}IPv4 network $new_network.0/24 conflicts with existing interface $(basename "$wg_conf")${NC}"
+							SERVER_WG_IPV4=""  # Reset to force re-entry
+							break
+						fi
+					fi
+				fi
+			done
+		fi
+	done
 
-    until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}: ]]; do
-        read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1 SERVER_WG_IPV6
-    done
+	until [[ ${SERVER_WG_IPV6} =~ ^([a-f0-9]{1,4}:){3,4}: ]]; do
+		read -rp "Server WireGuard IPv6: " -e -i fd42:42:42::1 SERVER_WG_IPV6
+		# Check for IPv6 conflict with existing WireGuard interfaces
+		if [[ -d /etc/wireguard ]]; then
+			for wg_conf in /etc/wireguard/*.conf; do
+				if [[ -f "$wg_conf" ]]; then
+					existing_ipv6=$(grep -oP 'Address\s*=\s*\K[0-9a-f:]+' "$wg_conf" 2>/dev/null | grep ':' | head -1 || true)
+					if [[ -n "$existing_ipv6" ]]; then
+						existing_prefix=$(echo "$existing_ipv6" | cut -d':' -f1-3)
+						new_prefix=$(echo "$SERVER_WG_IPV6" | cut -d':' -f1-3)
+						if [[ "$existing_prefix" == "$new_prefix" ]]; then
+							echo -e "${RED}IPv6 network $new_prefix::/64 conflicts with existing interface $(basename "$wg_conf")${NC}"
+							SERVER_WG_IPV6=""  # Reset to force re-entry
+							break
+						fi
+					fi
+				fi
+			done
+		fi
+	done
 
-    # Generate random number within private ports range
-    SERVER_PORT=51820
-    until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
-        read -rp "Server WireGuard port [1-65535]: " -e -i "${SERVER_PORT}" SERVER_PORT
-    done
+	until [[ ${SERVER_PORT} =~ ^[0-9]+$ ]] && [ "${SERVER_PORT}" -ge 1 ] && [ "${SERVER_PORT}" -le 65535 ]; do
+		read -rp "Server WireGuard port [1-65535]: " -e -i "51820" SERVER_PORT
+		# Check for port conflict with existing WireGuard interfaces
+		if [[ -d /etc/wireguard ]]; then
+			for wg_conf in /etc/wireguard/*.conf; do
+				if [[ -f "$wg_conf" ]]; then
+					existing_port=$(grep -oP 'ListenPort\s*=\s*\K[0-9]+' "$wg_conf" 2>/dev/null || true)
+					if [[ "$existing_port" == "$SERVER_PORT" ]]; then
+						echo -e "${RED}Port $SERVER_PORT is already in use by $(basename "$wg_conf")${NC}"
+						SERVER_PORT=""  # Reset to force re-entry
+						break
+					fi
+				fi
+			done
+		fi
+	done
 
     until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
         read -rp "First DNS resolver for clients: " -e -i 1.1.1.1 CLIENT_DNS_1
@@ -262,6 +307,7 @@ PublicKey = ${SERVER_PUB_KEY}
 PresharedKey = ${CLIENT_PRE_SHARED_KEY}
 Endpoint = ${ENDPOINT}
 AllowedIPs = ${ALLOWED_IPS}
+PersistentKeepalive = 25
 EOF
 
     # Add peer to server config
@@ -328,6 +374,81 @@ function revokeClient() {
     echo -e "${GREEN}Client ${CLIENT_NAME} revoked.${NC}"
 }
 
+function showClientConf() {
+    local interface="$1"
+    local count=$(grep -c "^### Client" "/etc/wireguard/${interface}.conf")
+    if [ $count -eq 0 ]; then
+        echo "No clients defined for interface ${interface}."
+        return
+    fi
+
+    echo "Select a client to view configuration:"
+    grep "^### Client" "/etc/wireguard/${interface}.conf" | cut -d ' ' -f 3 | nl -s ') '
+    local CLIENT_NUMBER
+    until [[ ${CLIENT_NUMBER} -ge 1 && ${CLIENT_NUMBER} -le ${count} ]]; do
+        read -rp "Client number: " CLIENT_NUMBER
+    done
+
+    local CLIENT_NAME
+    CLIENT_NAME=$(grep "^### Client" "/etc/wireguard/${interface}.conf" | cut -d ' ' -f 3 | sed -n "${CLIENT_NUMBER}p")
+
+    # Get client configuration file path
+    local HOME_DIR=$(getHomeDirForClient "${CLIENT_NAME}")
+    local CLIENT_CONF="${HOME_DIR}/${interface}-client-${CLIENT_NAME}.conf"
+
+    if [[ ! -f "$CLIENT_CONF" ]]; then
+        echo -e "${RED}Client configuration file not found: $CLIENT_CONF${NC}"
+        return
+    fi
+
+    echo ""
+    echo "Select configuration mode:"
+    echo "   1) Normal mode (full VPN)"
+    echo "   2) VLAN mode (wireguard subnet only)"
+    local MODE_OPTION
+    until [[ ${MODE_OPTION} =~ ^[1-2]$ ]]; do
+        read -rp "Select mode [1-2]: " MODE_OPTION
+    done
+
+    echo ""
+    echo "Client configuration for ${CLIENT_NAME}:"
+    echo "========================================"
+
+    if [[ ${MODE_OPTION} == '1' ]]; then
+        # Normal mode - show original config
+        cat "$CLIENT_CONF"
+    else
+        # VLAN mode - modify config
+        # Load params to get server IPs
+        loadParams "$interface"
+        
+        # Read the original config
+        config_content=$(cat "$CLIENT_CONF")
+        
+        # Remove DNS line
+        config_content=$(echo "$config_content" | grep -v '^DNS = ')
+        
+        # Modify AllowedIPs to wireguard subnet only
+        # Get server subnet from SERVER_WG_IPV4 and SERVER_WG_IPV6
+        SERVER_SUBNET_IPV4=$(echo "$SERVER_WG_IPV4" | cut -d'.' -f1-3)".0/24"
+        SERVER_SUBNET_IPV6=$(echo "$SERVER_WG_IPV6" | cut -d':' -f1-3)"::/64"
+        
+        # Replace AllowedIPs line
+        config_content=$(echo "$config_content" | sed "s|AllowedIPs = .*|AllowedIPs = ${SERVER_SUBNET_IPV4}, ${SERVER_SUBNET_IPV6}|")
+        
+        # Ensure PersistentKeepalive is set to 25
+        if ! echo "$config_content" | grep -q "PersistentKeepalive = 25"; then
+            config_content=$(echo "$config_content" | sed '/PersistentKeepalive =/d')
+            config_content=$(echo "$config_content" | sed "s|\(AllowedIPs = .*\)|\1\nPersistentKeepalive = 25|")
+        fi
+        
+        echo "$config_content"
+    fi
+    
+    echo ""
+    echo "========================================"
+}
+
 function removeInterface() {
     local interface="$1"
     echo -e "${RED}WARNING: This will stop and remove WireGuard interface '${interface}' and its configuration.${NC}"
@@ -354,16 +475,18 @@ function manageInterface() {
         echo "----------------------------------------"
         echo "1) Add a new client"
         echo "2) List all clients"
-        echo "3) Revoke a client"
-        echo "4) Remove this interface"
-        echo "5) Back to main menu"
-        read -rp "Select option [1-5]: " opt
+        echo "3) Show client configuration"
+        echo "4) Revoke a client"
+        echo "5) Remove this interface"
+        echo "6) Back to main menu"
+        read -rp "Select option [1-6]: " opt
         case $opt in
             1) addClient "$interface" ;;
             2) listClients "$interface" ;;
-            3) revokeClient "$interface" ;;
-            4) removeInterface "$interface"; break ;;
-            5) break ;;
+            3) showClientConf "$interface" ;;
+            4) revokeClient "$interface" ;;
+            5) removeInterface "$interface"; break ;;
+            6) break ;;
             *) echo "Invalid option." ;;
         esac
     done
