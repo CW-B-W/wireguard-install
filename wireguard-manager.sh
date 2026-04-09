@@ -62,6 +62,7 @@ SERVER_PUB_KEY=${SERVER_PUB_KEY}
 CLIENT_DNS_1=${CLIENT_DNS_1}
 CLIENT_DNS_2=${CLIENT_DNS_2}
 ALLOWED_IPS=${ALLOWED_IPS}
+WG_MTU=${WG_MTU}
 EOF
 }
 
@@ -97,6 +98,19 @@ function createInterfaceQuestions() {
     until [[ ${SERVER_PUB_NIC} =~ ^[a-zA-Z0-9_]+$ ]]; do
         read -rp "Public interface: " -e -i "${SERVER_NIC}" SERVER_PUB_NIC
     done
+    
+    # Get MTU of the public interface for WireGuard MTU calculation
+    if command -v ip &>/dev/null; then
+        DEFAULT_MTU=$(ip link show "$SERVER_PUB_NIC" 2>/dev/null | grep -oP 'mtu \K[0-9]+' || echo "1500")
+    else
+        DEFAULT_MTU=1500
+    fi
+    # Calculate suggested WireGuard MTU: default NIC MTU - 80 (for WireGuard overhead)
+    SUGGESTED_MTU=$((DEFAULT_MTU - 80))
+    # Ensure MTU is reasonable (not too small)
+    if [ "$SUGGESTED_MTU" -lt 1280 ]; then
+        SUGGESTED_MTU=1280
+    fi
 
     # Unique interface name
     local existing
@@ -183,6 +197,14 @@ function createInterfaceQuestions() {
         fi
     done
 
+    # MTU configuration
+    echo -e "\nMTU (Maximum Transmission Unit) configuration:"
+    echo "Default interface ${SERVER_PUB_NIC} MTU: ${DEFAULT_MTU}"
+    echo "Suggested WireGuard MTU (${DEFAULT_MTU} - 80): ${SUGGESTED_MTU}"
+    until [[ ${WG_MTU} =~ ^[0-9]+$ ]] && [ "${WG_MTU}" -ge 1280 ] && [ "${WG_MTU}" -le 9000 ]; do
+        read -rp "WireGuard MTU [1280-9000]: " -e -i "${SUGGESTED_MTU}" WG_MTU
+    done
+
     echo ""
     echo "Ready to create interface ${SERVER_WG_NIC}."
     read -n1 -r -p "Press any key to continue..."
@@ -204,6 +226,7 @@ function createNewInterface() {
 Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}
+MTU = ${WG_MTU}
 EOF
 
     # Add firewall rules (PostUp/PostDown)
@@ -301,6 +324,7 @@ function addClient() {
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
+MTU = ${WG_MTU}
 
 [Peer]
 PublicKey = ${SERVER_PUB_KEY}

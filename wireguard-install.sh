@@ -213,6 +213,27 @@ function installQuestions() {
 		fi
 	done
 
+	# MTU configuration
+	# Get MTU of the public interface for WireGuard MTU calculation
+	if command -v ip &>/dev/null; then
+		DEFAULT_MTU=$(ip link show "$SERVER_PUB_NIC" 2>/dev/null | grep -oP 'mtu \K[0-9]+' || echo "1500")
+	else
+		DEFAULT_MTU=1500
+	fi
+	# Calculate suggested WireGuard MTU: default NIC MTU - 80 (for WireGuard overhead)
+	SUGGESTED_MTU=$((DEFAULT_MTU - 80))
+	# Ensure MTU is reasonable (not too small)
+	if [ "$SUGGESTED_MTU" -lt 1280 ]; then
+		SUGGESTED_MTU=1280
+	fi
+	
+	echo -e "\nMTU (Maximum Transmission Unit) configuration:"
+	echo "Default interface ${SERVER_PUB_NIC} MTU: ${DEFAULT_MTU}"
+	echo "Suggested WireGuard MTU (${DEFAULT_MTU} - 80): ${SUGGESTED_MTU}"
+	until [[ ${WG_MTU} =~ ^[0-9]+$ ]] && [ "${WG_MTU}" -ge 1280 ] && [ "${WG_MTU}" -le 9000 ]; do
+		read -rp "WireGuard MTU [1280-9000]: " -e -i "${SUGGESTED_MTU}" WG_MTU
+	done
+
 	echo ""
 	echo "Okay, that was all I needed. We are ready to setup your WireGuard server now."
 	echo "You will be able to generate a client at the end of the installation."
@@ -288,13 +309,15 @@ SERVER_PRIV_KEY=${SERVER_PRIV_KEY}
 SERVER_PUB_KEY=${SERVER_PUB_KEY}
 CLIENT_DNS_1=${CLIENT_DNS_1}
 CLIENT_DNS_2=${CLIENT_DNS_2}
-ALLOWED_IPS=${ALLOWED_IPS}" >/etc/wireguard/params
+ALLOWED_IPS=${ALLOWED_IPS}
+WG_MTU=${WG_MTU}" >/etc/wireguard/params
 
 	# Add server interface
 	echo "[Interface]
 Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
-PrivateKey = ${SERVER_PRIV_KEY}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
+PrivateKey = ${SERVER_PRIV_KEY}
+MTU = ${WG_MTU}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
 
 	if pgrep firewalld; then
 		FIREWALLD_IPV4_ADDRESS=$(echo "${SERVER_WG_IPV4}" | cut -d"." -f1-3)".0"
@@ -445,11 +468,7 @@ function newClient() {
 PrivateKey = ${CLIENT_PRIV_KEY}
 Address = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128
 DNS = ${CLIENT_DNS_1},${CLIENT_DNS_2}
-
-# Uncomment the next line to set a custom MTU
-# This might impact performance, so use it only if you know what you are doing
-# See https://github.com/nitred/nr-wg-mtu-finder to find your optimal MTU
-# MTU = 1420
+MTU = ${WG_MTU}
 
 [Peer]
 PublicKey = ${SERVER_PUB_KEY}
